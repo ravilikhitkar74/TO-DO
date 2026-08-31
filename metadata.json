@@ -2,5 +2,7 @@
   "name": "Maintenance Task Tracker",
   "description": "Organize, schedule, and track routine maintenance todos, equipment inspections, service history, and recurring tasks.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
