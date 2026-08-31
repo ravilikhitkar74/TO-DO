@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Plus, 
   Sparkles, 
@@ -17,7 +17,8 @@ import {
   Layers, 
   SlidersHorizontal,
   ChevronRight,
-  ListTodo
+  ListTodo,
+  RefreshCw
 } from 'lucide-react';
 import { Asset, Category, MaintenanceLog, MaintenanceTask, MaintenanceTemplate, Priority } from './types';
 import { DEFAULT_ASSETS, DEFAULT_LOGS, DEFAULT_TASKS } from './data/defaultData';
@@ -28,6 +29,7 @@ import { CompleteTaskModal } from './components/CompleteTaskModal';
 import { MaintenanceTemplatesModal } from './components/MaintenanceTemplatesModal';
 import { AssetManagerModal } from './components/AssetManagerModal';
 import { ServiceHistoryModal } from './components/ServiceHistoryModal';
+import { ToastContainer, ToastMessage } from './components/Toast';
 import { getCategoryLabel } from './utils/categoryHelpers';
 import { calculateNextDueDate, getDueStatus, getTodayString } from './utils/dateUtils';
 
@@ -73,18 +75,126 @@ export default function App() {
     return DEFAULT_LOGS;
   });
 
-  // Sync to localStorage
+  // Toasts state for instant auto-refresh feedback
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<string>('Just now');
+  const [, setTick] = useState(0);
+
+  const showToast = useCallback((message: string, type: ToastMessage['type'] = 'success') => {
+    const id = 'toast_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5);
+    const newToast: ToastMessage = { id, type, message, timestamp: Date.now() };
+    setToasts((prev) => [...prev.slice(-3), newToast]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 3500);
+  }, []);
+
+  const dismissToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  // Sync to localStorage and update sync timestamp
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_TASKS, JSON.stringify(tasks));
+    setLastSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
   }, [tasks]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_ASSETS, JSON.stringify(assets));
+    setLastSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
   }, [assets]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(logs));
+    setLastSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
   }, [logs]);
+
+  // Automatic cross-tab and cross-window synchronization
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY_TASKS && e.newValue) {
+        try {
+          setTasks(JSON.parse(e.newValue));
+          showToast('Tasks synchronized from another tab', 'info');
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      if (e.key === STORAGE_KEY_ASSETS && e.newValue) {
+        try {
+          setAssets(JSON.parse(e.newValue));
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      if (e.key === STORAGE_KEY_LOGS && e.newValue) {
+        try {
+          setLogs(JSON.parse(e.newValue));
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, [showToast]);
+
+  // Auto-refresh timer to update due dates and status in real-time every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTick((t) => t + 1);
+    }, 30000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        setTick((t) => t + 1);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
+
+  // Manual refresh trigger
+  const handleManualRefresh = () => {
+    setIsRefreshing(true);
+    // Reload directly from localStorage or trigger re-render
+    const savedTasks = localStorage.getItem(STORAGE_KEY_TASKS);
+    if (savedTasks) {
+      try {
+        setTasks(JSON.parse(savedTasks));
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    const savedAssets = localStorage.getItem(STORAGE_KEY_ASSETS);
+    if (savedAssets) {
+      try {
+        setAssets(JSON.parse(savedAssets));
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    const savedLogs = localStorage.getItem(STORAGE_KEY_LOGS);
+    if (savedLogs) {
+      try {
+        setLogs(JSON.parse(savedLogs));
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setTick((t) => t + 1);
+    setLastSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    setTimeout(() => {
+      setIsRefreshing(false);
+      showToast('All tasks & maintenance records refreshed', 'refresh');
+    }, 400);
+  };
 
   // UI state
   const [searchTerm, setSearchTerm] = useState('');
@@ -104,12 +214,13 @@ export default function App() {
   const [isAssetsModalOpen, setIsAssetsModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
 
-  // Handlers for Tasks
+  // Handlers for Tasks with Auto-Refresh & Instant Feedback
   const handleSaveTask = (taskData: Omit<MaintenanceTask, 'id' | 'createdAt'>, taskId?: string) => {
     if (taskId) {
       setTasks((prev) =>
         prev.map((t) => (t.id === taskId ? { ...t, ...taskData } : t))
       );
+      showToast(`Task "${taskData.title}" updated and auto-saved`);
     } else {
       const newTask: MaintenanceTask = {
         ...taskData,
@@ -117,12 +228,15 @@ export default function App() {
         createdAt: new Date().toISOString(),
       };
       setTasks((prev) => [newTask, ...prev]);
+      showToast(`New task "${taskData.title}" added to schedule`);
     }
   };
 
   const handleDeleteTask = (taskId: string) => {
-    if (window.confirm('Delete this maintenance task?')) {
+    const target = tasks.find((t) => t.id === taskId);
+    if (window.confirm(`Delete task "${target?.title || 'this task'}"?`)) {
       setTasks((prev) => prev.filter((t) => t.id !== taskId));
+      showToast('Task removed from schedule', 'alert');
     }
   };
 
@@ -136,6 +250,7 @@ export default function App() {
         return { ...t, checklist: updatedChecklist };
       })
     );
+    showToast('Checklist updated & auto-saved', 'info');
   };
 
   const handlePostponeTask = (taskId: string, days: number) => {
@@ -154,6 +269,7 @@ export default function App() {
         return { ...t, dueDate: `${y}-${m}-${day}` };
       })
     );
+    showToast(`Task postponed by ${days} day${days > 1 ? 's' : ''}`);
   };
 
   const handleQuickToggleStatus = (task: MaintenanceTask) => {
@@ -162,6 +278,7 @@ export default function App() {
       setTasks((prev) =>
         prev.map((t) => (t.id === task.id ? { ...t, status: 'pending' } : t))
       );
+      showToast(`Task marked as active`);
     } else {
       // Open complete dialog for service logging
       setTaskToComplete(task);
@@ -197,6 +314,7 @@ export default function App() {
           };
         })
       );
+      showToast(`Service logged & next cycle scheduled for ${nextDueDate}`);
     } else {
       // Mark as completed
       setTasks((prev) =>
@@ -206,6 +324,7 @@ export default function App() {
             : t
         )
       );
+      showToast(`Task completed and saved to history logbook`);
     }
   };
 
@@ -236,6 +355,7 @@ export default function App() {
     };
 
     setTasks((prev) => [newTask, ...prev]);
+    showToast(`Template "${template.title}" applied & auto-scheduled`);
   };
 
   // Asset handlers
@@ -246,6 +366,7 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
     setAssets((prev) => [...prev, newAsset]);
+    showToast(`Equipment "${assetData.name}" added`);
   };
 
   const handleUpdateAsset = (id: string, assetData: Omit<Asset, 'id' | 'createdAt'>) => {
@@ -258,6 +379,7 @@ export default function App() {
         t.assetId === id ? { ...t, assetName: assetData.name } : t
       )
     );
+    showToast(`Equipment "${assetData.name}" updated`);
   };
 
   const handleDeleteAsset = (id: string) => {
@@ -268,16 +390,19 @@ export default function App() {
           t.assetId === id ? { ...t, assetId: undefined, assetName: undefined } : t
         )
       );
+      showToast('Equipment removed', 'alert');
     }
   };
 
   // History log handlers
   const handleDeleteLog = (id: string) => {
     setLogs((prev) => prev.filter((l) => l.id !== id));
+    showToast('Log entry removed', 'alert');
   };
 
   const handleClearLogs = () => {
     setLogs([]);
+    showToast('Logbook history cleared', 'alert');
   };
 
   const handleResetData = () => {
@@ -285,6 +410,7 @@ export default function App() {
       setTasks(DEFAULT_TASKS);
       setAssets(DEFAULT_ASSETS);
       setLogs(DEFAULT_LOGS);
+      showToast('Restored default maintenance schedule', 'refresh');
     }
   };
 
@@ -407,6 +533,25 @@ export default function App() {
 
           {/* Header Action Buttons */}
           <div className="flex items-center gap-2">
+            {/* Sync & Auto-Refresh Indicator + Manual Refresh */}
+            <div className="hidden lg:flex items-center gap-2 pl-2 pr-3 py-1 bg-stone-100/90 rounded-xl border border-stone-200 text-[11px] text-stone-600">
+              <span className="flex h-2 w-2 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span className="font-medium text-stone-700">Auto-Synced</span>
+              <button
+                id="header-manual-refresh-btn"
+                onClick={handleManualRefresh}
+                title="Refresh schedule & sync state"
+                className={`p-1 rounded-md text-stone-500 hover:text-stone-900 hover:bg-stone-200 transition-all cursor-pointer ${
+                  isRefreshing ? 'animate-spin text-amber-600' : ''
+                }`}
+              >
+                <RefreshCw className="w-3 h-3" />
+              </button>
+            </div>
+
             {/* Library / Templates Button */}
             <button
               id="header-open-templates-btn"
@@ -780,6 +925,9 @@ export default function App() {
           onClearLogs={handleClearLogs}
         />
       )}
+
+      {/* Auto-Refresh Toast Notifications */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
